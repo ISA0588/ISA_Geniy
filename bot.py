@@ -1,6 +1,6 @@
 """
 Универсальный Telegram-бот на базе aiogram v3, Webhook (Render), 
-с ротацией ключей Gemini API, поддержкой контекста, мультимодальным OCR/анализом фото 
+с ротацией ключей Gemini API, мультимодальным анализом фото/текста 
 и оплатой через Telegram Stars (10 звезд)[cite: 1].
 """
 
@@ -28,7 +28,7 @@ from google.genai import types as genai_types
 # ==================== КОНФИГУРАЦИЯ БОТА ====================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 DEVELOPER_IDS = {8186927099, 1359780349, 9215066653}  # Бесплатные VIP ID[cite: 1]
-STARS_PRICE = 10                                      # Стоимость запроса/перевода в Telegram Stars[cite: 1]
+STARS_PRICE = 10                                      # Стоимость запроса в Telegram Stars[cite: 1]
 
 # Переменные для Webhook (Render автоматически подставляет RENDER_EXTERNAL_URL)[cite: 1]
 WEBHOOK_HOST = os.environ.get("RENDER_EXTERNAL_URL", "").strip()
@@ -65,7 +65,6 @@ class ApiKeyManager:
                 if not found_any_ahead:
                     break
                 i += 1
-        # Если API_KEY1 не найден, проверяем стандартный GEMINI_API_KEY
         if not self.keys and os.environ.get("GEMINI_API_KEY"):
             self.keys.append(os.environ.get("GEMINI_API_KEY").strip())
         print(f"🔄 Загружено API-ключей ротации Gemini: {len(self.keys)}")
@@ -86,8 +85,6 @@ class ApiKeyManager:
 api_manager = ApiKeyManager()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip()
 
-# Хранилище сессий диалогов с историей (в памяти)
-user_sessions = {}
 # Хранилище оплативших пользователей (в памяти)
 PAID_USERS = set()
 
@@ -96,38 +93,6 @@ def get_gemini_client():
     """Создает свежий экземпляр клиента Gemini с текущим ключом ротации."""
     current_key = api_manager.get_current_key()
     return genai.Client(api_key=current_key)
-
-
-def get_or_create_chat(user_id: int):
-    """Создает или возвращает сессию диалога с историей и системным промптом для пользователя."""
-    if user_id not in user_sessions:
-        client = get_gemini_client()
-        system_instruction = (
-            "Ты — мощный и умный личный ИИ-ассистент и эксперт. Пользователь может присылать тебе "
-            "тесты, задачи, технические документы или изображения на любых языках. "
-            "Внимательно анализируй изображения и текст, распознавай суть, переводи при необходимости, "
-            "находи правильные ответы, давай развернутые и четкие объяснения."
-        )
-        try:
-            user_sessions[user_id] = client.chats.create(
-                model=GEMINI_MODEL,
-                config=genai_types.GenerateContentConfig(
-                    system_instruction=system_instruction, 
-                    temperature=0.3
-                ),
-            )
-        except Exception as e:
-            print(f"⚠️ Ошибка создания чат-сессии Gemini, пробую ротацию ключа: {e}")
-            api_manager.rotate()
-            client = get_gemini_client()
-            user_sessions[user_id] = client.chats.create(
-                model=GEMINI_MODEL,
-                config=genai_types.GenerateContentConfig(
-                    system_instruction=system_instruction, 
-                    temperature=0.3
-                ),
-            )
-    return user_sessions[user_id]
 
 
 def has_access(user_id: int) -> bool:
@@ -162,14 +127,12 @@ router.message.filter(F.from_user.is_bot == False)
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     user_id = message.from_user.id
-    user_sessions.pop(user_id, None)
 
     welcome_text = (
         "👋 Привет! Я умный ассистент на базе **Gemini** с поддержкой мультимодальности.\n\n"
         "📸 **Что я умею:**\n"
         "• Принимать фото и скриншоты тестов, задач или чертежей на любых языках.\n"
-        "• Распознавать текст (OCR), переводить его и давать точные правильные ответы.\n"
-        "• Вести диалог с сохранением контекста и истории.\n\n"
+        "• Распознавать текст (OCR), переводить его и давать точные правильные ответы.\n\n"
         "Просто отправь мне фото с вопросом или напиши текстовое сообщение!"
     )
 
@@ -181,12 +144,7 @@ async def cmd_start(message: Message, state: FSMContext):
 
 @router.message(Command("reset"))
 async def cmd_reset(message: Message):
-    user_id = message.from_user.id
-    if not has_access(user_id):
-        return await send_paywall(message)
-    
-    user_sessions.pop(user_id, None)
-    await message.answer("🔄 История диалога очищена. Начинаем с чистого листа!")
+    await message.answer("🔄 Готово! Отправьте новый вопрос или фото.")
 
 
 # Обработка платежей Telegram Stars[cite: 1]
@@ -197,127 +155,4 @@ async def pre_checkout_query_handler(pre_checkout_query: PreCheckoutQuery, bot: 
 
 @router.message(F.successful_payment)
 async def successful_payment_handler(message: Message):
-    user_id = message.from_user.id
-    PAID_USERS.add(user_id)
-    await message.answer(
-        "🎉 **Оплата прошла успешно!** Спасибо.\n\n"
-        "Теперь вам доступны все функции бота. Отправьте фото теста или задайте вопрос!"
-    )
-
-
-# Обработка фотографий (тесты, скриншоты, задачи)
-@router.message(F.photo)
-async def handle_photo(message: Message, bot: Bot):
-    user_id = message.from_user.id
-
-    if not has_access(user_id):
-        return await send_paywall(message, description="Анализ изображения / теста")
-
-    status_msg = await message.answer("⏳ Анализирую изображение и ищу ответ...")
-    await bot.send_chat_action(message.chat.id, "upload_photo")
-
-    try:
-        photo = message.photo[-1]
-        file_info = await bot.get_file(photo.file_id)
-        downloaded_file = await bot.download_file(file_info.file_path)
-        
-        image = Image.open(io.BytesIO(downloaded_file.read()))
-
-        caption = (
-            message.caption
-            or "Внимательно проанализируй эту картинку, распознай текст/вопрос, "
-               "переведи его при необходимости, найди правильный ответ и дай развернутое пояснение."
-        )
-
-        chat = get_or_create_chat(user_id)
-        response = chat.send_message([image, caption])
-
-        await message.reply(response.text)
-    except Exception as e:
-        print(f"⚠️ Ошибка обработки фото с Gemini: {e}")
-        api_manager.rotate()
-        try:
-            chat = get_or_create_chat(user_id)
-            response = chat.send_message([image, caption])
-            await message.reply(response.text)
-        except Exception as err:
-            await message.reply(f"❌ Произошла ошибка при обработке изображения: {err}")
-    finally:
-        try:
-            await bot.delete_message(chat_id=message.chat.id, message_id=status_msg.message_id)
-        except Exception:
-            pass
-
-
-# Обработка текстовых сообщений
-@router.message(F.text)
-async def handle_text(message: Message, bot: Bot):
-    user_id = message.from_user.id
-
-    if not has_access(user_id):
-        return await send_paywall(message, description="Текстовый запрос к Gemini")
-
-    await bot.send_chat_action(message.chat.id, "typing")
-
-    try:
-        chat = get_or_create_chat(user_id)
-        response = chat.send_message(message.text)
-        await message.reply(response.text)
-    except Exception as e:
-        print(f"⚠️ Ошибка текстового запроса Gemini: {e}")
-        api_manager.rotate()
-        try:
-            chat = get_or_create_chat(user_id)
-            response = chat.send_message(message.text)
-            await message.reply(response.text)
-        except Exception as err:
-            await message.reply(f"❌ Ошибка обращения к Gemini: {err}")
-
-
-# ==================== WEBHOOK СЕРВЕР НА AIOHTTP (ДЛЯ RENDER) ====================
-async def on_startup(bot: Bot):
-    if WEBHOOK_HOST:
-        try:
-            await bot.delete_webhook(drop_pending_updates=True)
-            print("🗑️ Предыдущий вебхук успешно удален.")
-        except Exception as e:
-            print(f"⚠️ Ошибка при удалении вебхука: {e}")
-
-        await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
-        print(f"🔗 Вебхук успешно зарегистрирован в Telegram: {WEBHOOK_URL}[cite: 1]")
-    else:
-        print("⚠️ Переменная RENDER_EXTERNAL_URL не найдена, проверьте настройки окружения![cite: 1]")
-
-
-def main():
-    if not BOT_TOKEN:
-        print("❌ ОШИБКА: Переменная окружения BOT_TOKEN не задана!")
-        return
-
-    bot = Bot(token=BOT_TOKEN)
-    dp = Dispatcher(storage=MemoryStorage())
-    dp.include_router(router)
-
-    dp.startup.register(on_startup)
-
-    app = web.Application()
-
-    async def health_check(request):
-        return web.Response(text="Gemini Bot via Webhook is running!")
-
-    app.router.add_get("/", health_check)
-
-    webhook_requests_handler = SimpleRequestHandler(
-        dispatcher=dp,
-        bot=bot,
-    )
-    webhook_requests_handler.register(app, path=WEBHOOK_PATH)
-
-    setup_application(app, dp, bot=bot)
-
-    print(f"🤖 Запуск Webhook-сервера на порту {WEBAPP_PORT}...")
-    web.run_app(app, host=WEBAPP_HOST, port=WEBAPP_PORT)
-
-
-if __name__ == "__main__":
-    main()
+    user_id = message
