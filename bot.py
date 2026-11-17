@@ -1,16 +1,13 @@
 """
 Универсальный Telegram-бот на базе aiogram v3, Webhook (Render), 
 с ротацией ключей Gemini API, поддержкой контекста, мультимодальным OCR/анализом фото 
-и оплатой через Telegram Stars (10 звезд).
+и оплатой через Telegram Stars (10 звезд)[cite: 1].
 """
 
 import asyncio
 import io
 import os
 import time
-import uuid
-import zipfile
-from pathlib import Path
 from PIL import Image
 
 from aiogram import Bot, Dispatcher, F, Router
@@ -19,10 +16,6 @@ from aiogram.types import (
     Message,
     PreCheckoutQuery,
     LabeledPrice,
-    FSInputFile,
-    CallbackQuery,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton
 )
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -34,9 +27,8 @@ from google.genai import types as genai_types
 
 # ==================== КОНФИГУРАЦИЯ БОТА ====================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
-DEVELOPER_IDS = {8186927099, 1359780349, 9215066653}  # Бесплатные VIP ID
+DEVELOPER_IDS = {8186927099, 1359780349, 9215066653}  # Бесплатные VIP ID[cite: 1]
 STARS_PRICE = 10                                      # Стоимость запроса/перевода в Telegram Stars[cite: 1]
-MAX_TELEGRAM_FILE_SIZE = 49 * 1024 * 1024             # Лимит Telegram Bot API (~49 МБ)[cite: 1]
 
 # Переменные для Webhook (Render автоматически подставляет RENDER_EXTERNAL_URL)[cite: 1]
 WEBHOOK_HOST = os.environ.get("RENDER_EXTERNAL_URL", "").strip()
@@ -96,11 +88,12 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip()
 
 # Хранилище сессий диалогов с историей (в памяти)
 user_sessions = {}
-# Хранилище оплативших пользователей (в памяти; для продакшена лучше подключить БД)
+# Хранилище оплативших пользователей (в памяти)
 PAID_USERS = set()
 
 
 def get_gemini_client():
+    """Создает свежий экземпляр клиента Gemini с текущим ключом ротации."""
     current_key = api_manager.get_current_key()
     return genai.Client(api_key=current_key)
 
@@ -228,7 +221,6 @@ async def handle_photo(message: Message, bot: Bot):
         file_info = await bot.get_file(photo.file_id)
         downloaded_file = await bot.download_file(file_info.file_path)
         
-        # Открываем изображение через Pillow
         image = Image.open(io.BytesIO(downloaded_file.read()))
 
         caption = (
@@ -245,7 +237,6 @@ async def handle_photo(message: Message, bot: Bot):
         print(f"⚠️ Ошибка обработки фото с Gemini: {e}")
         api_manager.rotate()
         try:
-            # Повторная попытка после ротации ключа
             chat = get_or_create_chat(user_id)
             response = chat.send_message([image, caption])
             await message.reply(response.text)
