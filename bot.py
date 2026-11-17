@@ -1,7 +1,7 @@
 """
 Универсальный Telegram-бот на базе aiogram v3, Webhook (Render), 
-с ротацией ключей Gemini API, мультимодальным анализом фото/текста 
-и оплатой через Telegram Stars (10 звезд)[cite: 1].
+с ротацией номерных ключей Gemini API (API_KEY1, API_KEY2...), 
+мультимодальным анализом фото/текста и оплатой через Telegram Stars (10 звезд)[cite: 1].
 """
 
 import asyncio
@@ -39,9 +39,9 @@ WEBAPP_HOST = "0.0.0.0"
 WEBAPP_PORT = int(os.environ.get("PORT", 10000))
 
 
-# ==================== МЕХАНИЗМ РОТАЦИИ КЛЮЧЕЙ GEMINI ====================
+# ==================== МЕХАНИЗМ РОТАЦИИ ТОЛЬКО НОМЕРНЫХ КЛЮЧЕЙ ====================
 class ApiKeyManager:
-    """Менеджер для автоматического поиска и ротации ключей вида API_KEY1, API_KEY2...[cite: 1]"""
+    """Менеджер для автоматического поиска и ротации ключей исключительно вида API_KEY1, API_KEY2...[cite: 1]"""
     def __init__(self):
         self.keys = []
         self.current_index = 0
@@ -65,9 +65,7 @@ class ApiKeyManager:
                 if not found_any_ahead:
                     break
                 i += 1
-        if not self.keys and os.environ.get("GEMINI_API_KEY"):
-            self.keys.append(os.environ.get("GEMINI_API_KEY").strip())
-        print(f"🔄 Загружено API-ключей ротации Gemini: {len(self.keys)}")
+        print(f"🔄 Загружено номерных API-ключей ротации (API_KEY1, API_KEY2...): {len(self.keys)}")
 
     def get_current_key(self):
         if not self.keys:
@@ -90,8 +88,10 @@ PAID_USERS = set()
 
 
 def get_gemini_client():
-    """Создает свежий экземпляр клиента Gemini с текущим ключом ротации."""
+    """Создает свежий экземпляр клиента Gemini с текущим номерным ключом ротации."""
     current_key = api_manager.get_current_key()
+    if not current_key:
+        print("❌ КРИТИЧЕСКАЯ ОШИБКА: Не найден ни один ключ вида API_KEY1, API_KEY2 и т.д. в переменных окружения!")
     return genai.Client(api_key=current_key)
 
 
@@ -210,7 +210,7 @@ async def handle_photo(message: Message, bot: Bot):
         if response_text:
             await message.reply(response_text)
         else:
-            await message.reply("❌ Не удалось получить ответ от Gemini. Проверьте API-ключи.")
+            await message.reply("❌ Не удалось получить ответ от Gemini. Проверьте номерные API-ключи (API_KEY1, API_KEY2...).")
 
     except Exception as err:
         await message.reply(f"❌ Произошла ошибка при обработке изображения: {err}")
@@ -250,7 +250,7 @@ async def handle_text(message: Message, bot: Bot):
             api_manager.rotate()
             await asyncio.sleep(0.3)
 
-    await message.reply("❌ Не удалось получить ответ от Gemini. Проверьте API-ключи.")
+    await message.reply("❌ Не удалось получить ответ от Gemini. Проверьте номерные API-ключи (API_KEY1, API_KEY2...).")
 
 
 # ==================== WEBHOOK СЕРВЕР НА AIOHTTP (ДЛЯ RENDER) ====================
